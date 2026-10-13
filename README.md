@@ -1,7 +1,7 @@
 # snakeDQN
 Project for the Computational Intelligence class at POSTECH University.
 
-A Double + Dueling DQN that learns Snake on a 12×12 board, plus a phone-friendly web visualizer.
+A tiny (276-parameter) n-step Double + Dueling DQN that averages ~72 apples per game on a 12×12 board, plus a phone-friendly web visualizer.
 
 ## Web demo
 Open `web/index.html` in any browser (single file, no server needed):
@@ -18,8 +18,9 @@ python play.py                         # watch the agent (add --human to play)
 ```
 
 ## Design
-- `snake_env.py` – headless env, O(1) moves, 20-feature state: danger / clear run / flood-fill free space
-  for straight-right-left, heading, food direction, tail offset, length. Relative actions (no suicide reversals).
-- `dqn.py` – dueling MLP (20→128→128→V+A), Double DQN targets, Huber loss, grad clipping,
+- `snake_env.py` – headless env, O(1) moves, rotation-invariant 20-feature state: for straight/right/left the
+  danger, clear run, flood-fill free space, tail reachability and food progress; food and tail offsets in the
+  head's frame; length. Relative actions (no suicide reversals).
+- `dqn.py` – dueling MLP (20→8→8→V+A, 276 params), 3-step Double DQN targets, Huber loss, grad clipping,
   Polyak target updates, preallocated numpy replay buffer.
-- `train.py` – 16 vectorised envs with batched action selection, optional `--wandb` logging.
+- `train.py` – 16 vectorised envs, batched action selection, LR decay, best-checkpoint selection, optional `--wandb`.

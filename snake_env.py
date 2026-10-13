@@ -1,7 +1,9 @@
 """Headless, allocation-light Snake environment.
 
-The state is a compact 20-feature vector (relative danger, free run length,
-flood-fill reachable area, heading, food and tail direction, length). The web
+The state is a compact, rotation-invariant 20-feature vector. For each relative
+move (straight, right, left): danger, clear run, flood-fill free space, whether
+the tail stays reachable, and whether it gets closer to food. Plus food and tail
+offsets in the head's frame, and length. The web
 version in web/index.html mirrors this file exactly so trained weights transfer.
 """
 from collections import deque
@@ -48,51 +50,58 @@ class SnakeEnv:
     def _blocked(self, x, y, tail):
         return not (0 <= x < self.w and 0 <= y < self.h) or (self.grid[y, x] and (x, y) != tail)
 
-    def _flood(self, sx, sy, tail):
-        """Cells reachable from (sx, sy) once the head has moved there."""
+    def _flood(self, sx, sy, tail, target):
+        """(cells reachable from (sx, sy) after the head moves there, whether `target` is adjacent)."""
         g, w, h = self.grid, self.w, self.h
         seen = np.zeros_like(g, dtype=bool)
         seen[sy, sx] = True
-        if tail is not None:
-            g[tail[1], tail[0]] = 0
-        q, n = [(sx, sy)], 1
+        g[tail[1], tail[0]] = 0
+        q, n, hit = [(sx, sy)], 1, False
         while q:
             x, y = q.pop()
             for dx, dy in DIRS:
                 nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h and not seen[ny, nx] and not g[ny, nx]:
+                if not (0 <= nx < w and 0 <= ny < h) or seen[ny, nx]:
+                    continue
+                if (nx, ny) == target:
+                    hit = True
+                elif not g[ny, nx]:
                     seen[ny, nx] = True
                     n += 1
                     q.append((nx, ny))
-        if tail is not None:
-            g[tail[1], tail[0]] = 1
-        return n
+        g[tail[1], tail[0]] = 1
+        return n, hit
 
     def features(self):
         hx, hy = self.body[0]
         tail = self.body[-1]
+        target = self.body[-2]  # tail position after a non-eating move
         f = np.zeros(N_FEATURES, dtype=np.float32)
         size = self.w * self.h
         span = max(self.w, self.h)
+        fx, fy = self.food if self.food is not None else (hx, hy)
+        d0 = abs(hx - fx) + abs(hy - fy)
         for i, t in enumerate(TURN):
             dx, dy = DIRS[(self.dir + t) % 4]
             nx, ny = hx + dx, hy + dy
             if self._blocked(nx, ny, tail):
                 f[i] = 1.0
             else:
-                f[6 + i] = self._flood(nx, ny, tail) / size
+                n, hit = self._flood(nx, ny, tail, target)
+                f[6 + i] = n / size
+                f[9 + i] = hit
+                f[12 + i] = abs(nx - fx) + abs(ny - fy) < d0
             run, x, y = 0, nx, ny
             while not self._blocked(x, y, tail):
                 run += 1
                 x += dx
                 y += dy
             f[3 + i] = run / span
-        f[9 + self.dir] = 1.0
-        if self.food is not None:
-            fx, fy = self.food
-            f[13], f[14], f[15], f[16] = fy < hy, fx > hx, fy > hy, fx < hx
-        f[17] = (tail[0] - hx) / self.w
-        f[18] = (tail[1] - hy) / self.h
+        (ax, ay), (bx, by) = DIRS[self.dir], DIRS[(self.dir + 1) % 4]  # forward, right
+        f[15] = ((fx - hx) * ax + (fy - hy) * ay) / span
+        f[16] = ((fx - hx) * bx + (fy - hy) * by) / span
+        f[17] = ((tail[0] - hx) * ax + (tail[1] - hy) * ay) / span
+        f[18] = ((tail[0] - hx) * bx + (tail[1] - hy) * by) / span
         f[19] = len(self.body) / size
         return f
 

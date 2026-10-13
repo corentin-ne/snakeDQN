@@ -1,4 +1,4 @@
-"""Double + Dueling DQN with a preallocated numpy replay buffer."""
+"""Double + Dueling n-step DQN with a preallocated numpy replay buffer."""
 import base64
 import json
 import os
@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 
 class DuelingMLP(nn.Module):
-    def __init__(self, n_in, n_out, hidden=128):
+    def __init__(self, n_in, n_out, hidden=8):
         super().__init__()
         self.fc1 = nn.Linear(n_in, hidden)
         self.fc2 = nn.Linear(hidden, hidden)
@@ -45,8 +45,9 @@ class ReplayBuffer:
 
 
 class Agent:
-    def __init__(self, n_in, n_out, hidden=128, lr=5e-4, gamma=0.95, tau=0.01, device="cpu"):
+    def __init__(self, n_in, n_out, hidden=8, lr=1e-3, gamma=0.97, n_step=3, tau=0.01, device="cpu"):
         self.n_out, self.gamma, self.tau, self.device = n_out, gamma, tau, device
+        self.n_step, self.gamma_n = n_step, gamma ** n_step
         self.net = DuelingMLP(n_in, n_out, hidden).to(device)
         self.target = DuelingMLP(n_in, n_out, hidden).to(device)
         self.target.load_state_dict(self.net.state_dict())
@@ -65,7 +66,7 @@ class Agent:
         s, a, r, s2, d = (torch.as_tensor(x, device=self.device) for x in batch)
         with torch.no_grad():  # Double DQN: online net picks, target net evaluates
             a2 = self.net(s2).argmax(1, keepdim=True)
-            y = r + self.gamma * (1 - d) * self.target(s2).gather(1, a2).squeeze(1)
+            y = r + self.gamma_n * (1 - d) * self.target(s2).gather(1, a2).squeeze(1)
         q = self.net(s).gather(1, a.unsqueeze(1)).squeeze(1)
         loss = F.smooth_l1_loss(q, y)
         self.opt.zero_grad(set_to_none=True)
