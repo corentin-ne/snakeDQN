@@ -6,11 +6,11 @@ const w = JSON.parse(html.match(/<script id="weights" type="application\/json">(
 global.atob = s => Buffer.from(s, "base64").toString("binary");
 const m = { exports: {} };
 new Function("module", core)(m);
-const { SnakeEnv, Net, Trainer, argmax } = m.exports;
+const { SnakeEnv, Net, Trainer, argmax, NF } = m.exports;
 
 const games = +(process.argv[2] || 100);
 if (w) {
-  const net = new Net(w.in, w.hidden, w.out).load(w.w), env = new SnakeEnv(12, 12), s = new Float32Array(20);
+  const net = new Net(w.in, w.hidden, w.out).load(w.w), env = new SnakeEnv(12, 12), s = new Float32Array(NF);
   const scores = [];
   let t = Date.now(), steps = 0;
   for (let g = 0; g < games; g++) {
@@ -22,11 +22,11 @@ if (w) {
   console.log(`pretrained JS: mean ${mean.toFixed(1)} max ${Math.max(...scores)} (${Math.round(steps / ((Date.now() - t) / 1000))} steps/s)`);
 }
 // in-browser trainer smoke test
-const net = new Net(), tr = new Trainer(net), env = new SnakeEnv(12, 12);
-let s = env.features(), s2 = new Float32Array(20), scores = [], t = Date.now();
+const net = new Net(NF, w ? w.hidden : 8), tr = new Trainer(net), env = new SnakeEnv(12, 12);
+let s = env.features(), s2 = new Float32Array(NF), scores = [], t = Date.now();
 while (tr.steps < +(process.argv[3] || 30000)) {
   let a = Math.random() < tr.eps ? (Math.random() * 3) | 0 : argmax(net.forward(s));
-  const r = env.step(a); env.features(s2); tr.push(s, a, r, s2, env.done); tr.learn();
+  const r = env.step(a); env.features(s2); tr.observe(s, a, r, s2, env.done); tr.learn();
   if (env.done) { scores.push(env.score); s = env.reset(); } else s.set(s2);
 }
 const last = scores.slice(-50);

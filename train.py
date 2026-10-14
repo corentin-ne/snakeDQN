@@ -5,6 +5,7 @@
 """
 import argparse
 import time
+from collections import deque
 
 import numpy as np
 import torch
@@ -32,8 +33,10 @@ def main():
     p.add_argument("--size", type=int, default=12)
     p.add_argument("--batch", type=int, default=256)
     p.add_argument("--buffer", type=int, default=200_000)
-    p.add_argument("--lr", type=float, default=5e-4)
-    p.add_argument("--gamma", type=float, default=0.95)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--gamma", type=float, default=0.97)
+    p.add_argument("--nstep", type=int, default=3)
+    p.add_argument("--hidden", type=int, default=8)
     p.add_argument("--eps-decay", type=float, default=0.4, help="fraction of steps to anneal epsilon over")
     p.add_argument("--load")
     p.add_argument("--save", default="snake_dqn.pth")
@@ -46,7 +49,7 @@ def main():
     torch.manual_seed(args.seed)
     torch.set_num_threads(max(1, torch.get_num_threads()))
     rng = np.random.default_rng(args.seed)
-    agent = Agent(N_FEATURES, N_ACTIONS, lr=args.lr, gamma=args.gamma)
+    agent = Agent(N_FEATURES, N_ACTIONS, hidden=args.hidden, lr=args.lr, gamma=args.gamma, n_step=args.nstep)
     if args.load:
         agent.load(args.load)
     if args.eval:
@@ -68,12 +71,27 @@ def main():
     recent, games, best, t0 = [], 0, 0, time.time()
     iters = args.steps // args.envs
 
+    n, g = args.nstep, args.gamma
+    pending = [deque() for _ in envs]  # per-env (s, a, r) awaiting their n-step return
+    best_eval, eval_every = -1.0, max(1, 25_000 // args.envs)
+
     for it in range(1, iters + 1):
         eps = max(0.01, 1.0 - it / (iters * args.eps_decay))
         acts = agent.act(states, eps, rng)
+        out = []
         for k, env in enumerate(envs):
             nxt[k], rew[k], done[k] = env.step(int(acts[k]))
-        buf.add_batch(states, acts, rew, nxt, done)
+            q = pending[k]
+            q.append((states[k].copy(), acts[k], rew[k]))
+            if done[k]:
+                while q:  # flush with truncated returns
+                    out.append((q[0][0], q[0][1], sum(g ** i * t[2] for i, t in enumerate(q)), nxt[k], 1.0))
+                    q.popleft()
+            elif len(q) == n:
+                out.append((q[0][0], q[0][1], sum(g ** i * t[2] for i, t in enumerate(q)), nxt[k].copy(), 0.0))
+                q.popleft()
+        if out:
+            buf.add_batch(*(np.array(c) for c in zip(*out)))
         for k in np.flatnonzero(done):
             env = envs[k]
             games += 1
@@ -84,16 +102,25 @@ def main():
             nxt[k] = env.reset()
         states, nxt = nxt, states
 
+        for pg in agent.opt.param_groups:  # linear LR decay to 10%
+            pg["lr"] = args.lr * (1 - 0.9 * it / iters)
         if buf.n >= args.batch * 4:
             agent.learn(buf.sample(args.batch, rng))
 
-        if it % 2000 == 0:
+        if it % 1000 == 0:
             avg = np.mean(recent[-200:]) if recent else 0.0
             print(f"step {it * args.envs:>8}  games {games:>6}  avg200 {avg:5.1f}  best {best:>3}  "
                   f"eps {eps:.2f}  {it * args.envs / (time.time() - t0):,.0f} st/s", flush=True)
-            agent.save(args.save)
+        if it % eval_every == 0 and eps < 0.2:  # keep the best greedy checkpoint
+            sc = evaluate(agent, 30, args.size, seed=10_000).mean()
+            if sc > best_eval:
+                best_eval = sc
+                agent.save(args.save)
+            print(f"  eval30 {sc:.1f}  (best {best_eval:.1f})", flush=True)
 
-    agent.save(args.save)
+    if best_eval < 0:
+        agent.save(args.save)
+    agent.load(args.save)
     agent.export_web(args.web)
     sc = evaluate(agent, 100, args.size)
     print(f"final greedy eval (100 games): mean {sc.mean():.1f}  max {sc.max()}")
